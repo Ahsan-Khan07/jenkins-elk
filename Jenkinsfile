@@ -18,13 +18,13 @@ pipeline {
             }
         }
     }
-    post {
-        always {
-            // Clean up: Stop and remove container
-            script {
-                sh 'docker-compose -f docker-compose.yml down'
-            }
-        }
-    }
+    // post {
+    //     always {
+    //         // Clean up: Stop and remove container
+    //         script {
+    //             sh 'docker-compose -f docker-compose.yml down'
+    //         }
+    //     }
+    // }
 }
 
