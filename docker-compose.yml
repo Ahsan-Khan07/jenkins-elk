@@ -1,0 +1,151 @@
+version: '2.2'
+
+services:
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    volumes:
+      - certs:/usr/share/elasticsearch/config/certs
+    user: "0"
+    command: >
+      bash -c '
+        if [ x${ELASTIC_PASSWORD} == x ]; then
+          echo "Set the ELASTIC_PASSWORD environment variable in the .env file";
+          exit 1;
+        elif [ x${KIBANA_PASSWORD} == x ]; then
+          echo "Set the KIBANA_PASSWORD environment variable in the .env file";
+          exit 1;
+        fi;
+        if [ ! -f config/certs/ca.zip ]; then
+          echo "Creating CA";
+          bin/elasticsearch-certutil ca --silent --pem -out config/certs/ca.zip;
+          unzip config/certs/ca.zip -d config/certs;
+        fi;
+        if [ ! -f config/certs/certs.zip ]; then
+          echo "Creating certs";
+          echo -ne \
+          "instances:\n"\
+          "  - name: es01\n"\
+          "    dns:\n"\
+          "      - es01\n"\
+          "      - localhost\n"\
+          "    ip:\n"\
+          "      - 127.0.0.1\n"\
+          > config/certs/instances.yml;
+          bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key;
+          unzip config/certs/certs.zip -d config/certs;
+        fi;
+        echo "Setting file permissions"
+        chown -R root:root config/certs;
+        find . -type d -exec chmod 750 \{\} \;;
+        find . -type f -exec chmod 640 \{\} \;;
+        echo "Waiting for Elasticsearch availability";
+        until curl -s --cacert config/certs/ca/ca.crt https://es01:9200 | grep -q "missing authentication credentials"; do sleep 30; done;
+        echo "Setting kibana_system password";
+        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" https://es01:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
+        echo "All done!";'
+
+        #### Elasticsearch Container Compose  ######
+    
+  es01:
+    depends_on:
+      - setup
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: es01  
+    volumes:
+      - certs:/usr/share/elasticsearch/config/certs
+      - esdata01:/usr/share/elasticsearch/data
+    ports:
+      - ${ES_PORT}:9200
+    environment:
+      - node.name=es01
+      - cluster.name=${CLUSTER_NAME}
+      - discovery.type=single-node  
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"  
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es01/es01.key
+      - xpack.security.http.ssl.certificate=certs/es01/es01.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es01/es01.key
+      - xpack.security.transport.ssl.certificate=certs/es01/es01.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${LICENSE}
+       
+       ##### Kibana Container Compose ######
+
+  # kibana:
+  #   depends_on:
+  #     - es01
+  #   image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
+  #   container_name: kib01  
+  #   volumes:
+  #     - certs:/usr/share/kibana/config/certs
+  #     - kibanadata:/usr/share/kibana/data
+  #   ports:
+  #     - ${KIBANA_PORT}:5601
+  #   environment:
+  #     - SERVERNAME=kibana
+  #     - ELASTICSEARCH_HOSTS=https://es01:9200
+  #     - ELASTICSEARCH_USERNAME=kibana_system
+  #     - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+  #     - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
+
+  #       ####### Logstash Container Compose ######
+
+  # logstash:
+  #   image: docker.elastic.co/logstash/logstash:${STACK_VERSION}
+  #   container_name: log01
+  #   volumes:
+  #     - ./logstash/pipeline/pipelines.yml:/usr/share/logstash/config/pipelines.yml
+  #     - ./logstash/config/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+  #     - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro,Z
+  #     - ./logstash/pipeline/emp.csv:/usr/share/logstash/emp.csv
+  #   ports:
+  #     - "5043:5044"
+  #     - "5000:5000/tcp"
+  #     - "5000:5000/udp"
+  #     - "9400:9400"
+  #     - "12201:12201/udp"
+  #   depends_on:
+  #     - es01
+
+  #       ###### Metricbeat container Coompose ##########
+
+  # metricbeat:
+  #   container_name: metricbeat
+  #   hostname: metricbeat
+  #   user: root #To read the docker socket
+  #   cap_add: ['sys_ptrace', 'dac_read_search']  
+  #   image: docker.elastic.co/beats/metricbeat:${STACK_VERSION}
+  #   volumes:
+  #     #Mount the metricbeat configuration so users can make edits.
+  #     - ./metricbeat/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml
+  #     #Mount the modules.d directory into the container. This allows user to potentially make changes to the modules and they will be dynamically loaded.
+  #     - ./config/beats/metricbeat/modules.d/:/usr/share/metricbeat/modules.d/
+  #     #The commented sections below enable Metricbeat to monitor the Docker host rather than the Metricbeat container. These are used by the system module.
+  #     - /proc:/hostfs/proc:ro
+  #     - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+  #     #Allows us to report on docker from the hosts information.
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     #We mount the host filesystem so we can report on disk usage with the system module.
+  #     - /:/hostfs:ro
+  #   command: metricbeat -e -system.hostfs=/hostfs -strict.perms=false
+  #   restart: on-failure
+  #   environment:
+  #     - ELASTICSEARCH_HOSTS=https://es01:9200
+  #     - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt 
+  #     - ssl_certificate_verification=false  
+  #   depends_on:
+  #     - es01      
+       
+volumes:
+  certs:
+    driver: local
+  esdata01:
+    driver: local
+  # kibanadata:
+  #   driver: local      
