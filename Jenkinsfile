@@ -11,7 +11,7 @@ pipeline {
             steps {
                 // Start Elasticsearch container using Docker Compose
                 script {
-                    dockerComposeFile = 'docker-compose.yml"'
+                    dockerComposeFile = 'docker-compose.yml'
                     dockerComposeYaml = readFile(dockerComposeFile)
                     sh "docker-compose -f $dockerComposeFile up -d"
                 }
